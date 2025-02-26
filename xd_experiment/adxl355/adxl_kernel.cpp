@@ -109,8 +109,6 @@ void setMeasureMode(int fd) {
     readRegister(fd, ADXL355_REG_POWER_CTL, &current, 1);
     cout << "0x" << hex << (int)current << " " << endl;
     writeRegister(fd, ADXL355_REG_POWER_CTL, current & ~ADXL355_REG_POWER_CTL_STANDBY);
-
-
 }
 
 void setRange(int fd, uint8_t range) {
@@ -131,7 +129,6 @@ void setFilter(int fd) {
     writeRegister(fd, ADXL355_REG_FILTER, current);
 }
 
-// Merge data from 3 bytes into a 20-bit signed value
 int32_t mergeData(uint8_t a, uint8_t b, uint8_t c) {
     int32_t raw_data;
     ((uint8_t*)&raw_data)[1] = c;
@@ -144,7 +141,7 @@ int32_t mergeData(uint8_t a, uint8_t b, uint8_t c) {
 }
 
 // Function to read acceleration data and update values directly
-void readAccelData(int fd, int32_t *raw_x, int32_t *raw_y, int32_t *raw_z) {
+void readAccelData(int fd,int32_t *raw_x, int32_t *raw_y, int32_t *raw_z) {
     uint8_t data[9];
     readRegister(fd, ADXL355_REG_XDATA3, data, 9);
 
@@ -156,12 +153,11 @@ void readAccelData(int fd, int32_t *raw_x, int32_t *raw_y, int32_t *raw_z) {
     // cout << "X: " << *raw_x << " Y: " << *raw_y << " Z: " << *raw_z << endl;
 }
 
-
 int main() {
     setupGPIO();
     int fd = setupSPI();
     if (fd < 0) return 1;
-    
+
     uint8_t devId;
     readRegister(fd, ADXL355_REG_DEVID, &devId, 1);
     cout << "Device ID: 0x" << hex << (int)devId << endl;
@@ -174,16 +170,18 @@ int main() {
     setRange(fd, RANGE_2G);
     setFilter(fd);
     setMeasureMode(fd);
-
+    int32_t x, y, z;
+    float acc_x,acc_y,acc_z;
     try {
         while (true) {
-            int32_t x, y, z;
-            readAccelData(fd, &x, &y, &z);
-            float x_in_g = x * scale * gravity;
-            float y_in_g = y * scale;
-            float z_in_g = z * scale ;
-            cout <<  "X: "<< x_in_g <<  " Y: "<<  y_in_g << " Z: "<< z_in_g << endl;
-            // readAccelData(fd);
+            readAccelData(fd,&x, &y, &z);
+            acc_x = x * SCALE * GRAVITY;
+            acc_y = y *  SCALE * GRAVITY;
+            acc_z = z * SCALE * GRAVITY;
+
+            // writeToFile(chrono::utc_clock::now(), acc_x,acc_y,acc_z);
+
+            cout << acc_x << "," <<  acc_y <<  ","<< acc_z << endl;
             this_thread::sleep_for(chrono::milliseconds(10));
         }
     } catch (...) {

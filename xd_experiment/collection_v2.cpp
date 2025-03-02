@@ -141,6 +141,7 @@ void readSensor() {
     // file.close();
 }
 
+
 int main() {
     wiringPiSetup();
 

@@ -28,11 +28,16 @@ mutex gps_lock, data_lock;
 condition_variable gps_cv;
 
 // Holds latest GPS time, latitude, longitude
-string latest_gps_time = "";
-string latest_latitude = "";
-string latest_longitude = "";
+string latest_gps_time = "nan";
+string latest_latitude = "nan";
+string latest_longitude = "nan";
 
-// GPS Data Structure
+// GPS status variables (GLOBAL VARIABLES) - UPDATED
+steady_clock::time_point last_gps_time = steady_clock::now();  
+bool gps_available = false;  
+
+
+// Acc Data Structure
 struct AccData {
     float acc_x;
     float acc_y;
@@ -61,10 +66,12 @@ constexpr int ACC_SAMPLES_PER_GPS = 10; // 100Hz Acc and 10Hz GPS
 #define ADXL355_REG_XDATA1    0x0A
 #define ADXL355_REG_FILTER    0x28 // 0101 
 
-constexpr float SCALE = 3.9e-6f;       // Scale factor for raw data conversion to 'g'
+constexpr float SCALE_FOR_2G = 3.9e-6f;       // Scale factor for raw data conversion to 'g'
+constexpr float SCALE_FOR_8G = 15.6e-6f;
 constexpr float GRAVITY = 9.80665f;    // Standard gravity in m/s²
 
 #define RANGE_2G 0x01
+#define RANGE_8G 0x03
 #define ADXL355_REG_POWER_CTL_STANDBY 0x01
 
 // GPS Data Structure
@@ -184,40 +191,57 @@ void readGPS(int serial_fd) {
         int bytes_read = read(serial_fd, buffer, sizeof(buffer) - 1);
         if (bytes_read > 0) {
             buffer[bytes_read] = '\0';
-            gps_buffer += string(buffer);  
+            gps_buffer += string(buffer);
 
             size_t pos;
             while ((pos = gps_buffer.find("\n")) != string::npos) {
                 string line = gps_buffer.substr(0, pos);
-                gps_buffer.erase(0, pos + 1); 
+                gps_buffer.erase(0, pos + 1);
 
+                // Check if line contains $GNRMC sentence
                 if (line.find("$GNRMC") != string::npos) {
-                    // Split by commas
-                    size_t comma1 = line.find(",");
-                    size_t comma2 = line.find(",", comma1 + 1);
-                    size_t comma3 = line.find(",", comma2 + 1);
-                    size_t comma4 = line.find(",", comma3 + 1);
-                    size_t comma5 = line.find(",", comma4 + 1);
-                    size_t comma6 = line.find(",", comma5 + 1);
-                
-                    if (comma6 != string::npos) {
- 
-                        latest_gps_time = line.substr(comma1 + 1, comma2 - comma1 - 1); 
-                        string latitude = line.substr(comma3 + 1, comma4 - comma3 - 1); 
-                        string longitude = line.substr(comma5 + 1, comma6 - comma5 - 1);
-                        latest_latitude = latitude;
-                        latest_longitude = longitude;
-                       // cout << "GPS Time: " << latest_gps_time << ", Latitude: " << latest_latitude << ", Longitude: " << latest_longitude << endl;
+                    stringstream ss(line);
+                    string token;
+                    vector<string> tokens;
+
+                    // Split line by commas into tokens
+                    while (getline(ss, token, ',')) {
+                        tokens.push_back(token);
+                    }
+
+                    // Check if we have enough tokens
+                    if (tokens.size() >= 7) {
+                        string validity = tokens[2];  // A (valid) or V (invalid)
+
+                        if (validity == "A") {  
+                            latest_gps_time = tokens[1].empty() ? "nan" : tokens[1];
+                            latest_latitude = tokens[3].empty() ? "nan" : tokens[3];
+                            latest_longitude = tokens[5].empty() ? "nan" : tokens[5];
+
+                            last_gps_time = steady_clock::now();
+                            gps_available = true;
+
+                            cout << "Valid GPS Data -> Time: " << latest_gps_time
+                                 << ", Latitude: " << latest_latitude
+                                 << ", Longitude: " << latest_longitude << endl;
+                        } else {  // GPS data is invalid
+                            cout << "Invalid GPS data received. Skipping update." << endl;
+                            latest_gps_time = "nan";     
+                            latest_latitude = "nan";     
+                            latest_longitude = "nan";    
+                            gps_available = false;      
+                        }
+                    } else {
+                        cout << "Incomplete GPS data received. Skipping update." << endl;
                     }
                 }
-                
-                    gps_cv.notify_one();
-                }
+
+                gps_cv.notify_one();
             }
-            this_thread::sleep_for(chrono::milliseconds(10));
         }
-        
+        this_thread::sleep_for(chrono::milliseconds(10));
     }
+}
 
 // ADXL355 Reading Function (100Hz)
 void readADXL355(int fd) {
@@ -230,9 +254,9 @@ void readADXL355(int fd) {
         int32_t z = mergeData(data[6], data[7], data[8]);
 
         AccData new_acc_data;
-        new_acc_data.acc_x = x * SCALE * GRAVITY;
-        new_acc_data.acc_y = y * SCALE * GRAVITY;
-        new_acc_data.acc_z = z * SCALE * GRAVITY;
+        new_acc_data.acc_x = x * SCALE_FOR_8G * GRAVITY;
+        new_acc_data.acc_y = y * SCALE_FOR_8G * GRAVITY;
+        new_acc_data.acc_z = z * SCALE_FOR_8G * GRAVITY;
 
         auto now = system_clock::now();
         auto now_time_t = system_clock::to_time_t(now);
@@ -286,7 +310,7 @@ void writeToCSV() {
 
     // Write header if file is empty
     if (file.tellp() == 0) {
-        file << "UTC_Time, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, Latitude, Longitude" << endl;
+        file << "UTC_Time, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, Latitude, Longitude,Timestamp" << endl;
     }
 
     while (running) {
@@ -317,8 +341,6 @@ void writeToCSV() {
                  << latitude << "," << longitude << "," << acc.time << endl;
             file.flush();  // Flush the buffer
         }
-
-        // cout << "Wrote " << buffer_copy.size() << " records to file." << endl;
     }
 
     file.close();
@@ -345,7 +367,7 @@ int main() {
         return 1;
     }
 
-    setRange(fd, RANGE_2G);
+    setRange(fd, RANGE_8G);
     setFilter(fd);
     setMeasureMode(fd);
 
